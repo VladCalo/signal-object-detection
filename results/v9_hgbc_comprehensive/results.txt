@@ -1,0 +1,14 @@
+v9 — Comprehensive features (1366-dim)
+Train: 12400 | Val: 3100
+
+Best: HGBC {'n': 500, 'lr': 0.05, 'md': 7} -> 0.4058
+
+HGBC Results:
+  depth=5 lr=0.03 n=500 -> 0.4010
+  depth=5 lr=0.05 n=500 -> 0.3887
+  depth=5 lr=0.1 n=500 -> 0.3923
+  depth=7 lr=0.03 n=500 -> 0.4035
+  depth=7 lr=0.05 n=500 -> 0.4058
+  depth=7 lr=0.1 n=500 -> 0.3955
+
+RF 1000: 0.3939

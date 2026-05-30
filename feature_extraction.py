@@ -124,3 +124,167 @@ def load_dataset_pixels(image_dir, csv_path):
 
     labels_arr = np.array(labels, dtype=np.int32) if labels else None
     return features, labels_arr, filenames
+
+
+# ============================================================
+# COMPREHENSIVE FEATURES  (v9+ experiments)
+# ============================================================
+#
+# Combines 6 feature groups into a single 1366-dim vector:
+#   1. Color histograms (256)  — color distribution baseline
+#   2. HOG features (864)      — gradient orientation per 8×8 cell,
+#                                captures vertical signal line edges
+#   3. Channel percentiles (27) — per-channel intensity statistics
+#   4. Local variance (8)      — texture roughness features
+#   5. Connected components (28) — blob count at 7 thresholds
+#   6. Row/Col projections (183) — spatial energy distribution
+#
+# Gaussian denoising (sigma=1.5) is applied before gradient
+# and spatial features to reduce pixel-level noise.
+# ============================================================
+
+from scipy.ndimage import label, uniform_filter, gaussian_filter
+
+
+def extract_comprehensive_features(image, num_bins=64):
+    """
+    Extract a comprehensive feature vector from an RGBA image.
+
+    Combines color histograms, HOG (gradient orientation histograms),
+    per-channel statistics, texture features, connected component
+    counts at multiple thresholds, and row/column energy projections.
+
+    Args:
+        image    : numpy array of shape (H, W, 4), pixel values [0, 255]
+        num_bins : number of bins for color histograms (per channel)
+
+    Returns:
+        1D numpy array of length 1366 (for 128×55 images with 64 bins)
+    """
+    features = []
+    H, W, _ = image.shape
+
+    # --- Grayscale with Gaussian denoise ---
+    gray_raw = (0.299 * image[:, :, 0] +
+                0.587 * image[:, :, 1] +
+                0.114 * image[:, :, 2]) / 255.0
+    gray = gaussian_filter(gray_raw, sigma=1.5)
+
+    # ---- 1. Color histograms (4 × num_bins = 256 features) ----
+    # same as extract_histogram_features — proven baseline
+    for ch in range(4):
+        hist, _ = np.histogram(image[:, :, ch], bins=num_bins, range=(0, 256))
+        hist = hist.astype(np.float64)
+        hist /= hist.sum()
+        features.extend(hist.tolist())
+
+    # ---- 2. HOG — Histogram of Oriented Gradients (864 features) ----
+    # Compute image gradients using central differences
+    gx = np.zeros_like(gray)
+    gy = np.zeros_like(gray)
+    gx[:, 1:-1] = gray[:, 2:] - gray[:, :-2]   # horizontal gradient
+    gy[1:-1, :] = gray[2:, :] - gray[:-2, :]    # vertical gradient
+    magnitude = np.sqrt(gx ** 2 + gy ** 2)
+    orientation = np.arctan2(gy, gx) * 180.0 / np.pi % 180  # [0, 180)
+
+    # Divide image into 8×8 cells, 9 orientation bins per cell
+    cell_size = 8
+    hog_bins = 9
+    n_cells_y = H // cell_size   # 128 // 8 = 16
+    n_cells_x = W // cell_size   # 55 // 8 = 6
+
+    for cy in range(n_cells_y):
+        for cx in range(n_cells_x):
+            y0 = cy * cell_size
+            y1 = (cy + 1) * cell_size
+            x0 = cx * cell_size
+            x1 = (cx + 1) * cell_size
+            cell_mag = magnitude[y0:y1, x0:x1].ravel()
+            cell_ori = orientation[y0:y1, x0:x1].ravel()
+            # histogram of orientations, weighted by gradient magnitude
+            hist, _ = np.histogram(cell_ori, bins=hog_bins,
+                                   range=(0, 180), weights=cell_mag)
+            # L2-normalize each cell independently
+            norm = np.sqrt(np.sum(hist ** 2) + 1e-6)
+            features.extend((hist / norm).tolist())
+
+    # ---- 3. Per-channel percentile statistics (3 × 9 = 27 features) ----
+    for ch in range(3):   # R, G, B only
+        channel = image[:, :, ch] / 255.0
+        features.append(channel.mean())
+        features.append(channel.std())
+        features.extend(
+            np.percentile(channel, [5, 10, 25, 50, 75, 90, 95]).tolist()
+        )
+
+    # ---- 4. Local variance texture (8 features) ----
+    local_mean = uniform_filter(gray, size=5)
+    local_var = uniform_filter((gray - local_mean) ** 2, size=5)
+    features.extend([local_var.mean(), local_var.std(), local_var.max()])
+    features.extend(
+        np.percentile(local_var, [50, 75, 90, 95, 99]).tolist()
+    )
+
+    # ---- 5. Connected components at multiple thresholds (7 × 4 = 28) ----
+    for threshold in [0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50]:
+        binary = (gray > threshold).astype(np.int32)
+        labeled_arr, num_cc = label(binary)
+        features.append(num_cc)
+        if num_cc > 0:
+            areas = np.array([np.sum(labeled_arr == j)
+                              for j in range(1, num_cc + 1)])
+            features.extend([areas.max(), areas.mean(),
+                             areas.std() if num_cc > 1 else 0.0])
+        else:
+            features.extend([0.0, 0.0, 0.0])
+
+    # ---- 6. Row/Column energy projections (128 + 55 = 183 features) ----
+    # column projection — mean intensity per column (signal positions)
+    features.extend(gray.mean(axis=0).tolist())   # (W,) = 55
+    # row projection — mean intensity per row (frequency distribution)
+    features.extend(gray.mean(axis=1).tolist())    # (H,) = 128
+
+    return np.array(features, dtype=np.float64)
+
+
+def load_dataset_comprehensive(image_dir, csv_path, num_bins=64):
+    """
+    Load dataset with comprehensive features (1366-dim).
+
+    Returns:
+        features  : numpy array of shape (num_samples, 1366)
+        labels    : numpy array of shape (num_samples,) with values 1-5,
+                    or None if csv has no 'label' column (test set)
+        filenames : list of image filenames (strings)
+    """
+    filenames = []
+    labels = []
+
+    with open(csv_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            filenames.append(row['id'])
+            if 'label' in row:
+                labels.append(int(row['label']))
+
+    num_samples = len(filenames)
+
+    # determine feature size from first image
+    first_img = load_image(os.path.join(image_dir, filenames[0]))
+    first_feat = extract_comprehensive_features(first_img, num_bins)
+    num_features = len(first_feat)
+
+    features = np.zeros((num_samples, num_features), dtype=np.float64)
+    features[0] = first_feat
+
+    print(f'  Extracting comprehensive features ({num_features} dims) '
+          f'from {num_samples} images...')
+    for i in range(1, num_samples):
+        if (i + 1) % 1000 == 0:
+            print(f'    {i + 1}/{num_samples}')
+        img_path = os.path.join(image_dir, filenames[i])
+        image = load_image(img_path)
+        features[i] = extract_comprehensive_features(image, num_bins)
+
+    labels_arr = np.array(labels, dtype=np.int32) if labels else None
+    return features, labels_arr, filenames
