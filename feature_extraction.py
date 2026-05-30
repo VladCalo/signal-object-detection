@@ -288,3 +288,109 @@ def load_dataset_comprehensive(image_dir, csv_path, num_bins=64):
 
     labels_arr = np.array(labels, dtype=np.int32) if labels else None
     return features, labels_arr, filenames
+
+
+# ============================================================
+# RANDOM CONVOLUTIONAL FEATURES  (v10 experiments)
+# ============================================================
+#
+# Applies random 2D filters (3×3, 5×5, 7×7) to the grayscale
+# image and pools the responses. This captures spatial patterns
+# that hand-crafted features miss, without any learned weights.
+#
+# Uses scipy.signal.convolve2d — pure signal processing,
+# NOT deep learning (no neural network, no backpropagation).
+# ============================================================
+
+from scipy.signal import fftconvolve
+
+
+def extract_rcf_features(image, n_filters_per_size=50, seed=42):
+    """
+    Extract Random Convolutional Features from an RGBA image.
+
+    Generates random 2D filters of sizes 3×3, 5×5, 7×7 and applies
+    them to the grayscale image. For each filter response, computes
+    global pooling statistics (mean, max, std).
+
+    Args:
+        image             : numpy array of shape (H, W, 4), values [0, 255]
+        n_filters_per_size: number of random filters per kernel size
+        seed              : random seed for reproducible filters
+
+    Returns:
+        1D numpy array of length 3 * 3 * n_filters_per_size
+        (default: 3 sizes × 50 filters × 3 stats = 450 features)
+    """
+    # grayscale, normalized to [0, 1]
+    gray = (0.299 * image[:, :, 0] +
+            0.587 * image[:, :, 1] +
+            0.114 * image[:, :, 2]) / 255.0
+
+    rng = np.random.RandomState(seed)
+    features = []
+
+    for kernel_size in [3, 5, 7]:
+        for _ in range(n_filters_per_size):
+            # random filter with unit variance
+            filt = rng.randn(kernel_size, kernel_size)
+
+            # apply convolution (fftconvolve is faster for larger kernels)
+            response = fftconvolve(gray, filt, mode='valid')
+
+            # global pooling statistics
+            features.append(response.mean())
+            features.append(response.max())
+            features.append(response.std())
+
+    return np.array(features, dtype=np.float64)
+
+
+def load_dataset_v10(image_dir, csv_path, num_bins=64,
+                     n_filters_per_size=50, rcf_seed=42):
+    """
+    Load dataset with v10 features: comprehensive (1366-dim) +
+    RCF (450-dim) = 1816-dim total.
+
+    Returns:
+        features  : numpy array of shape (num_samples, 1816)
+        labels    : numpy array of shape (num_samples,) with values 1-5,
+                    or None if csv has no 'label' column (test set)
+        filenames : list of image filenames (strings)
+    """
+    filenames = []
+    labels = []
+
+    with open(csv_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            filenames.append(row['id'])
+            if 'label' in row:
+                labels.append(int(row['label']))
+
+    num_samples = len(filenames)
+
+    # determine feature size from first image
+    first_img = load_image(os.path.join(image_dir, filenames[0]))
+    comp_feat = extract_comprehensive_features(first_img, num_bins)
+    rcf_feat  = extract_rcf_features(first_img, n_filters_per_size, rcf_seed)
+    first_combined = np.concatenate([comp_feat, rcf_feat])
+    num_features = len(first_combined)
+
+    features = np.zeros((num_samples, num_features), dtype=np.float64)
+    features[0] = first_combined
+
+    print(f'  Extracting v10 features ({num_features} dims: '
+          f'{len(comp_feat)} comprehensive + {len(rcf_feat)} RCF) '
+          f'from {num_samples} images...')
+    for i in range(1, num_samples):
+        if (i + 1) % 1000 == 0:
+            print(f'    {i + 1}/{num_samples}')
+        img_path = os.path.join(image_dir, filenames[i])
+        image = load_image(img_path)
+        comp = extract_comprehensive_features(image, num_bins)
+        rcf  = extract_rcf_features(image, n_filters_per_size, rcf_seed)
+        features[i] = np.concatenate([comp, rcf])
+
+    labels_arr = np.array(labels, dtype=np.int32) if labels else None
+    return features, labels_arr, filenames

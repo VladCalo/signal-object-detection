@@ -43,8 +43,8 @@ tema_ai/
 ├── feature_extraction.py           ← image loading + feature extraction
 ├── knn_classifier.py               ← KnnClassifier class + helpers
 ├── solution_knn.py                 ← v1: KNN experiments + submission
-└── solution_svm.py                 ← v2: SVM experiments + submission
-└── solution_hgbc.py                ← v9: HGBC experiments + submission
+├── solution_svm.py                 ← v2: SVM experiments + submission
+└── solution_v10.py                 ← v10: HGBC + RCF experiments + submission
 ```
 
 ---
@@ -157,8 +157,8 @@ Rows = true class, Columns = predicted class (classes 1–5):
 - Cache must be deleted when changing the feature extraction method
 - v1/v2 used `load_dataset` (histogram features, 256-dim)
 - v3/v4 use `load_dataset_pixels` (grayscale pixels, 7040-dim)
-- v9 uses `load_dataset_preprocessed` (viridis-decoded + background subtraction, ~14,500-dim)
-  - Uses separate cache files (`*_preprocessed.*`) — does NOT overwrite v1-v8 caches
+- v10 uses `load_dataset_v10` (1366-dim comprehensive + 450-dim RCF, 1816-dim total)
+  - Uses separate cache files (`*_v10_features.npy`, `*_v10_labels.npy`) — does NOT overwrite previous caches
 
 ---
 
@@ -440,5 +440,77 @@ Identical to v1 — 256-dim color histograms loaded from cache. No scaling neede
 - GBM (0.3210 val) underperforms KNN K=21 (0.3126 val → 0.35 Kaggle)
 - Despite the theoretical advantage of sequential boosting, histogram features appear better suited to distance-based classification (KNN) than gradient boosting
 - **Conclusion**: KNN K=21 L2 remains the best model on global histogram features
+
+---
+
+### v10 — HistGradientBoosting on Comprehensive + Random Convolutional Features (RCF)
+**Date**: 30 May 2026  
+**Kaggle score**: *(pending validation)*  
+**Submission file**: `submissions/v10_rcf_best.csv`
+
+#### Goal
+Implement a highly robust tabular and spatial pipeline without using deep learning. Capture both high-level hand-crafted visual characteristics (comprehensive color, texture, shape, and layout descriptors) and multi-scale local spatial patterns (via random convolutional filters). Use a modern histogram-based gradient booster to handle mixed feature scales, high dimensionality (1,816 dimensions), and complex feature interactions.
+
+#### Feature Extraction
+The feature vector combines two major components for a total of **1,816 features**:
+1. **1,366-dim Comprehensive Features**:
+   - **Color Histograms (256 features)**: 64 bins per channel across R, G, B, A.
+   - **Histogram of Oriented Gradients (HOG) (864 features)**: Captured on Gaussian-smoothed grayscale images using central differences. Extracted across 8×8 cells with 9 orientation bins per cell, and L2 normalized.
+   - **Per-Channel Percentile Statistics (27 features)**: Mean, standard deviation, and percentiles (5, 10, 25, 50, 75, 90, 95) computed across R, G, B channels.
+   - **Local Variance Texture (8 features)**: Local variance computed using a 5×5 uniform filter on the grayscale image, summarized by its mean, standard deviation, max, and percentiles (50, 75, 90, 95, 99).
+   - **Connected Component (CC) Statistics (28 features)**: Connected components extracted using 7 intensity thresholds (0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50). For each threshold, CC count, mean CC area, max CC area, and standard deviation of CC areas are computed.
+   - **Row & Column Intensity Projections (183 features)**: 55 vertical column averages and 128 horizontal row averages, capturing the precise spatial energy distribution.
+2. **450-dim Random Convolutional Features (RCF)**:
+   - Captures multi-scale local visual patterns (oriented edges, peaks, valleys) using random convolutional filters, completely bypassing deep neural network weights.
+   - 150 random filters generated using standard normal distribution (50 of size 3×3, 50 of size 5×5, 50 of size 7×7) and applied to normalized grayscale images via Fast Fourier Transform convolution (`scipy.signal.fftconvolve`).
+   - For each filter response, global pooling statistics (**mean**, **max**, **std**) are computed to produce 450 compact, shift-invariant spatial features (150 filters × 3 stats).
+
+#### Model: HistGradientBoostingClassifier
+- Extremely fast training on large tabular feature sets using binning.
+- Hyperparameter search: **max_depth ∈ {7, 10, 12}**, **learning_rate ∈ {0.02, 0.03, 0.05}**, **max_iter = 500**, `min_samples_leaf=5`.
+- Comparison baseline: **Random Forest Classifier with 1,000 trees** (`max_features='sqrt'`).
+- Train/val split: **80/20** (12,400 train, 3,100 val)
+
+#### Validation Results
+
+| Model | Hyperparameters | Validation Accuracy |
+|---|---|---|
+| **HGBC** | **max_depth=10, learning_rate=0.05** | **0.4355** 🏆 |
+| HGBC | max_depth=10, learning_rate=0.03 | 0.4306 |
+| HGBC | max_depth=10, learning_rate=0.02 | 0.4287 |
+| HGBC | max_depth=7, learning_rate=0.02 | 0.4255 |
+| HGBC | max_depth=12, learning_rate=0.02 | 0.4248 |
+| HGBC | max_depth=12, learning_rate=0.03 | 0.4216 |
+| HGBC | max_depth=7, learning_rate=0.05 | 0.4161 |
+| HGBC | max_depth=12, learning_rate=0.05 | 0.4145 |
+| HGBC | max_depth=7, learning_rate=0.03 | 0.4139 |
+| Random Forest | 1000 trees, sqrt features | 0.3887 |
+
+> **Best Config**: HGBC depth=10, lr=0.05 → val accuracy **0.4355**
+
+#### Confusion Matrix (HGBC depth=10 lr=0.05, validation set)
+
+Rows = true class, Columns = predicted class (classes 1–5):
+
+```
+[[546  81  37  18   9]
+ [226 193 109  59  30]
+ [113 110 165 125  73]
+ [115  73  85 164 159]
+ [ 95  49  56 128 282]]
+```
+
+##### Per-Class Accuracies
+- **Class 1**: 546 / 691 = **79.0%**
+- **Class 2**: 193 / 617 = **31.3%**
+- **Class 3**: 165 / 586 = **28.2%**
+- **Class 4**: 164 / 596 = **27.5%**
+- **Class 5**: 282 / 610 = **46.2%**
+
+#### Analysis
+- **Breakthrough Improvement**: Moving from color histograms to the combined 1,816-dim comprehensive + RCF feature space yielded a massive performance jump (validation accuracy soared from ~0.33 to **0.4355**).
+- **RCF Visual Power**: Applying multi-scale random convolutional filters proved to be highly effective. It successfully extracts structural and texture patterns that global metrics miss, while complying perfectly with the competition's rule forbidding pre-trained networks.
+- **HistGradientBoosting Superiority**: HGBC dramatically outperformed Random Forest (0.4355 vs 0.3887). HGBC's sequential learning allows it to build precise decision trees that correct residual errors, while its feature-binning design ensures high-dimensional training is incredibly fast and robust to overfitting.
+- **Remaining Challenges**: While accuracy has surged, the intermediate classes (2, 3, and 4) remain difficult due to high visual similarity, as shown by the dense clusters along the main diagonal of the confusion matrix. Class 1 and Class 5 continue to be the most distinct.
 
 ---
