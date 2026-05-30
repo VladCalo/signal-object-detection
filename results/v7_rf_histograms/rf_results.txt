@@ -1,0 +1,6 @@
+RF Validation Results (features: 256-dim color histograms)
+Train: 12400 samples | Val: 3100 samples
+
+max_features    n=100       n=200       n=300     
+sqrt            0.3116      0.3287      0.3365    
+log2            0.3161      0.3223      0.3229    

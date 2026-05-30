@@ -1,0 +1,9 @@
+KNN Validation Results (features: 256-dim color histograms, 64 bins/channel)
+Train: 12400 samples | Val: 3100 samples
+
+K              L2          L1
+1          0.2616      0.2587
+3          0.2732      0.2577
+5          0.2816      0.2771
+7          0.2868      0.2861
+9          0.2926      0.2894

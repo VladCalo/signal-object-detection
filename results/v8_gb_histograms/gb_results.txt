@@ -1,0 +1,6 @@
+Gradient Boosting Validation Results (features: 256-dim color histograms)
+max_depth=3 (fixed) | Train: 12400 samples | Val: 3100 samples
+
+lr \ n      n=100       n=200     
+0.1         0.3148      0.3210    
+0.05        0.3094      0.3110    

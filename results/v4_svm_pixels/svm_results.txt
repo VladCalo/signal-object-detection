@@ -1,0 +1,6 @@
+SVM Validation Results (features: 7040-dim grayscale pixels, 55x128)
+Train: 12400 samples | Val: 3100 samples
+
+Kernel      C=0.1       C=1         C=10      
+linear      0.2100      0.2100      0.2100    
+rbf         0.2229      0.2287      0.2381    

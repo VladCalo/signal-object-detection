@@ -1,0 +1,6 @@
+SVM Validation Results (features: 256-dim color histograms)
+Train: 12400 samples | Val: 3100 samples
+
+Kernel      C=0.1       C=1         C=10      
+linear      0.2052      0.2055      0.2190    
+rbf         0.2590      0.2794      0.2506    
